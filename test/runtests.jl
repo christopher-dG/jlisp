@@ -25,6 +25,9 @@ end
             Expr(:block, Expr(:call, :+, :x, :y)),
         )
 
+        ex = JLisp.sexp(:({@show {max 1 2}}); flatten=true)
+        @test ex.head === :macrocall && first(ex.args) === Symbol("@show")
+        @test last(ex.args) == Expr(:call, :max, 1, 2)
     end
 
     @testset "String parsing" begin

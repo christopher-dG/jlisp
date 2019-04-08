@@ -73,14 +73,18 @@ end
 # This catches any expression head that we don't explicitly handle.
 sexp(::Val{H}, args...) where H = Expr(H, map(sexp, args)...)
 
-# The only valid :braces expressions are {} and {fun}.
+# The only valid :braces expressions are {}, {fun}, {var val}, and {@macro arg1 arg2}.
 sexp(::Val{:braces}, args...) = se"Commas are not allowed inside expressions"
 sexp(::Val{:braces}) = :nothing
 sexp(::Val{:braces}, arg1::Symbol) = Expr(:call, sexp(arg1))
 function sexp(::Val{:braces}, arg1::Expr)
-    arg1.head === :call && length(arg1.args) == 2 && first(arg1.args) isa Symbol ||
+    if arg1.head === :macrocall
+        Expr(:macrocall, map(sexp, arg1.args)...)
+    elseif arg1.head === :call && length(arg1.args) == 2 && first(arg1.args) isa Symbol
+        Expr(:call, first(arg1.args), sexp(last(arg1.args)))
+    else
         se"Unrecognized function call syntax"
-    Expr(:call, first(arg1.args), sexp(last(arg1.args)))
+    end
 end
 
 # These are your generic S-expressions.
