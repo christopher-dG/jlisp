@@ -60,6 +60,21 @@ function flatten!(ex::Expr)
     ex
 end
 
+# Creates a struct definition.
+function defstruct(mut::Bool, head, args...)
+    block = Expr(:block)
+    foreach(args) do arg
+        if arg isa Expr && arg.head === :row && length(arg.args) == 2 &&
+            first(arg.args) isa Symbol
+            # Typed argument.
+            push!(block.args, Expr(:(::), first(arg.args), sexp(last(arg.args))))
+        else
+            push!(block.args, arg)
+        end
+    end
+    Expr(:struct, mut, head, block)
+end
+
 # This catches literals like symbols, numbers, and strings.
 sexp(x) = x
 
@@ -73,10 +88,11 @@ end
 # This catches any expression head that we don't explicitly handle.
 sexp(::Val{H}, args...) where H = Expr(H, map(sexp, args)...)
 
-# The only valid :braces expressions are {}, {fun}, {var val}, and {@macro arg1 arg2}.
+# Valid :braces expressions are: {}, {fun}, {var val}, {:kw}, and {@macro arg1 arg2}.
 sexp(::Val{:braces}, args...) = se"Commas are not allowed inside expressions"
 sexp(::Val{:braces}) = :nothing
-sexp(::Val{:braces}, arg1::Symbol) = Expr(:call, sexp(arg1))
+sexp(::Val{:braces}, arg1::QuoteNode) = kwexpr(Val(arg1.value))
+sexp(::Val{:braces}, arg1::Symbol) = Expr(:call, arg1)
 function sexp(::Val{:braces}, arg1::Expr)
     if arg1.head === :macrocall
         Expr(:macrocall, map(sexp, arg1.args)...)
@@ -126,8 +142,15 @@ end
 
 # This catches "escaped" operators that would otherwise cause parse errors.
 # Example: {:+ 1 2}.
-kwexpr(::Val{F}, args...) where F =
-    isopassign(F) ? Expr(F, map(sexp, args)...)  : sexp(Val(:row), F, args...)
+function kwexpr(::Val{F}, args...) where F
+    if isopassign(F)
+        Expr(F, map(sexp, args)...)
+    elseif isletter(first(string(F)))
+        se"Only operators can be escaped with :"
+    else
+        sexp(Val(:row), F, args...)
+    end
+end
 
 # An assignment, i.e. var = val.
 # Example: {:def x 1}.
@@ -174,8 +197,8 @@ end
 
 # A let binding.
 # Example: {:let {{x 1} {y 2}} {+ x y}}.
-kwexpr(::Val{:let}, args...) = se"Wrong number of arguments to :let"
 kwexpr(::Val{:let}, arg1, arg2) = se"Invalid :let binding"
+kwexpr(::Val{:let}, args...) = Expr(:let, Expr(:block), Expr(:block, map(sexp, args)...))
 function kwexpr(::Val{:let}, arg1::Expr, args...)
     if arg1.head === :braces
         # {:let {varname varval} ...}
@@ -192,6 +215,52 @@ function kwexpr(::Val{:let}, arg1::Expr, args...)
     Expr(:let, Expr(:block, binds...), Expr(:block, map(sexp, args)...))
 end
 
+# A return statement.
+# Example: {:return 1}.
+kwexpr(::Val{:return}) = Expr(:return, nothing)
+kwexpr(::Val{:return}, arg1) = Expr(:return, sexp(arg1))
+kwexpr(::Val{:return}, args...) = se"Invalid return statement"
+
+# A struct definition.
+# Example: {:struct Foo field {field2 Type} {:function Foo {} {new 0 0}}}.
+kwexpr(::Val{:struct}, arg1, args...) = defstruct(false, arg1, args...)
+
+# A mutable struct definition (same syntax as :struct).
+kwexpr(::Val{:mutable}, arg1, args...) = defstruct(true, arg1, args...)
+
+# An abstract type definition.
+# Example: {:abstract Foo{T} <: Super}
+kwexpr(::Val{:abstract}, args...) = Expr(:abstract, map(sexp, args)...)
+
+# A primitive type definition.
+# Example: {:primitive Foo <: Super 32}
+kwexpr(::Val{:primitive}, args...) = Expr(:primitive, map(sexp, args)...)
+
+# A quoted block.
+# Example: {:quote {fun} {other arg} result}.
+kwexpr(::Val{:quote}, args...) = Expr(:quote, Expr(:block, map(sexp, args)...))
+
+# A block start.
+# Example: {:begin {fun} {other arg} result}.
+kwexpr(::Val{:begin}, args...) = Expr(:block, map(sexp, args)...)
+
+# A module definition.
+# Example: {:module Foo {body} {morebody}}
+kwexpr(::Val{:module}, args...) = se"Invalid module name"
+kwexpr(::Val{:module}, arg1::Symbol, args...) =
+    Expr(:module, true, arg1, Expr(:block, map(sexp, args)...))
+
+# A bare module definition (same syntax as :module).
+kwexpr(::Val{:baremodule}, args...) = se"Invalid module name"
+kwexpr(::Val{:baremodule}, arg1::Symbol, args...) =
+    Expr(:module, false, arg1, Expr(:block, map(sexp, args)...))
+
+# A function definition.
+# Example: {:function foo {arg1 arg2::Type arg3::Type=default :kw kw1}}
+function kwexpr(::Val{:function}, arg1, arg2::Expr, args...)
+    # TODO: arg2 arguments must be inserted into arg1 :call.
+end
+
 # A multi-branch if statement, i.e. elseif.
 # Example: {:cond {{pred1 x} body1} {{pred2 x} body2} {true body3}}.
 # Note that no else is inserted.
@@ -199,7 +268,6 @@ function kwexpr(::Val{:cond}, args...)
     # TODO
 end
 
-# TODO: try, function, macro, quote, return, begin, using, import, module, baremodule,
-# struct, mutable, abstract, primitive,
+# TODO: try, function, macro, using, import.
 
 end

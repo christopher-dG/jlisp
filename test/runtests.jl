@@ -19,10 +19,29 @@ end
         @test_sexp {:if true 1 2} Expr(:if, :true, 1, 2)
         @test_sexp {:for {x xs} x} Expr(:for, Expr(:(=), :x, :xs), :x)
         @test_sexp {:while true fun} Expr(:while, :true, :fun)
-        @test_sexp {:let {{x 1} {y 2}} {+ x y}} Expr(
+        @test_sexp {:module Foo 1} Expr(:module, true, :Foo, Expr(:block, 1))
+        @test_sexp {:baremodule Foo 1} Expr(:module, false, :Foo, Expr(:block, 1))
+        @test_sexp {:quote 1 2 3} Expr(:quote, Expr(:block, 1, 2, 3))
+        @test_sexp {:begin 1 2 3} Expr(:block, 1, 2, 3)
+        @test_sexp {:abstract Foo} Expr(:abstract, :Foo)
+        @test_sexp {:abstract Foo <: Real} Expr(:abstract, Expr(:<:, :Foo, :Real))
+        @test_sexp {:primitive Foo 8} Expr(:primitive, :Foo, 8)
+        @test_sexp {:primitive Foo <: Real 8} Expr(:primitive, Expr(:<:, :Foo, :Real), 8)
+        @test_sexp {:mutable Foo} Expr(:struct, true, :Foo, Expr(:block))
+        @test_sexp {:return} Expr(:return, nothing)
+        @test_sexp {:return 1} Expr(:return, 1)
+
+        @test_sexp {:struct Foo a {b Int}} Expr(
+            :struct,
+            false,
+            :Foo,
+            Expr(:block, :a, Expr(:(::), :b, :Int)),
+        )
+
+        @test_sexp {:let {{x 1} {y 2}} 1} Expr(
             :let,
             Expr(:block, Expr(:(=), :x, 1), Expr(:(=), :y, 2)),
-            Expr(:block, Expr(:call, :+, :x, :y)),
+            Expr(:block, 1),
         )
 
         ex = JLisp.sexp(:({@show {max 1 2}}); flatten=true)
