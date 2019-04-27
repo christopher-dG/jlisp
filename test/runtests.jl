@@ -33,9 +33,14 @@ end
         @test_sexp {:return 1} Expr(:return, 1)
         @test_sexp {:|| foo bar} Expr(:||, :foo, :bar)
 
-        @test_sexp {:function foo {x} x} Expr(
+        @test_sexp {:function foo {x :kw y=1 z::Bool} x} Expr(
             :function,
-            Expr(:call, :foo, :x),
+            Expr(
+                :call,
+                :foo,
+                Expr(:parameters, Expr(:kw, :y, 1), Expr(:(::), :z, :Bool)),
+                :x,
+            ),
             Expr(:block, :x),
         )
 

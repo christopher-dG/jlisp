@@ -102,7 +102,12 @@ function funhead(name, args::Vector)
             found_kws && se"Can only indicate start of keywords once"
             found_kws = true
         elseif found_kws
-            push!(kws, sexp(arg))
+            kw = if arg isa Expr && arg.head === :(=)
+                Expr(:kw, map(sexp, arg.args)...)
+            else
+                sexp(arg)
+            end
+            push!(kws, kw)
         else
             push!(pos, sexp(arg))
         end
