@@ -69,16 +69,20 @@ function flatten!(ex::Expr)
     ex
 end
 
-nametypedefault(x::Symbol) = x, nothing, nothing
-function nametypedefault(ex::Expr)
-    if ex.head === :(=)
-        name, type, _  = nametypedefault(first(ex.args))
-        name, type, last(ex.args)
-    elseif ex.head === :(::)
-        first(ex.args), last(ex.args), nothing
-    else
-        nothing, nothing, nothing
+# Add a :catch or :finally expression to a :try expression.
+function tryex!(ex::Expr, arg::Expr)
+    arg.head === :row || se"Invalid :try expression"
+    if first(arg.args) == QuoteNode(:catch)
+        length(arg.args) in (2, 3) || se"Invalid :catch expression"
+        ex.args[3] === false || se"Cannot repeat :catch expression"
+        ex.args[3] = Expr(:block, sexp(last(arg.args)))
+        length(arg.args) == 3 && (ex.args[2] = sexp(arg.args[2]))
+    elseif first(arg.args) == QuoteNode(:finally)
+        length(arg.args) == 2 || se"Invalid :finally expression"
+        length(ex.args) < 4 || se"Cannot repeat :finally expression"
+        push!(ex.args, Expr(:block, sexp(last(arg.args))))
     end
+    ex
 end
 
 # Creates a struct definition.
@@ -187,7 +191,12 @@ function sexp(::Val{:row}, arg1, args...)
     ex
 end
 
-# This catches "escaped" operators that would otherwise cause parse errors.
+# This catches some special operators that have their own expression heads.
+for F in map(QuoteNode, (:||, :&&))
+    @eval kwexpr(::Val{$F}, args...) = Expr($F, map(sexp, args)...)
+end
+
+# This catches other "escaped" operators that would otherwise cause parse errors.
 # Example: {:+= 1 2}
 function kwexpr(::Val{F}, args...) where F
     if isopassign(F)
@@ -328,6 +337,16 @@ function kwexpr(::Val{:cond}, arg1::Expr, args...)
     ex
 end
 
-# TODO: try, using, import.
+# A try/catch/finally expression.
+# Example: {:try {foo} {:catch ex {bar ex}} {:finally {baz}}}
+kwexpr(::Val{:try}, args...) = se"Wrong number of arguments to :try"
+function kwexpr(::Val{:try}, arg1, arg2::Expr, arg3=nothing)
+    ex = Expr(:try, Expr(:block, sexp(arg1)), false, false)
+    tryex!(ex, arg2)
+    arg3 === nothing || tryex!(ex, arg3)
+    ex
+end
+
+# TODO: using, import. Relative imports are really tricky.
 
 end

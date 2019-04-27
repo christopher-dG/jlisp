@@ -31,6 +31,7 @@ end
         @test_sexp {:mutable Foo} Expr(:struct, true, :Foo, Expr(:block))
         @test_sexp {:return} Expr(:return, nothing)
         @test_sexp {:return 1} Expr(:return, 1)
+        @test_sexp {:|| foo bar} Expr(:||, :foo, :bar)
 
         @test_sexp {:function foo {x} x} Expr(
             :function,
@@ -62,6 +63,22 @@ end
             :foo,
             Expr(:block, :bar),
             Expr(:elseif, Expr(:call, :foo, :bar), Expr(:block, :baz)),
+        )
+
+        @test_sexp {:try {foo} {:catch ex {rethrow}} {:finally {bar}}} Expr(
+            :try,
+            Expr(:block, Expr(:call, :foo)),
+            :ex,
+            Expr(:block, Expr(:call, :rethrow)),
+            Expr(:block, Expr(:call, :bar)),
+        )
+
+        @test_sexp {:try {foo} {:catch {rethrow}} {:finally {bar}}} Expr(
+            :try,
+            Expr(:block, Expr(:call, :foo)),
+            false,
+            Expr(:block, Expr(:call, :rethrow)),
+            Expr(:block, Expr(:call, :bar)),
         )
 
         ex = JLisp.sexp(:({@show {max 1 2}}); flatten=true)
