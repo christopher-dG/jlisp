@@ -18,6 +18,7 @@ end
         @test_sexp {:const x 1} Expr(:const, Expr(:(=), :x, 1))
         @test_sexp {:if true 1 2} Expr(:if, :true, 1, 2)
         @test_sexp {:for {x xs} x} Expr(:for, Expr(:block, Expr(:(=), :x, :xs)), :x)
+        @test_sexp {:for {{x xs}} x} Expr(:for, Expr(:block, Expr(:(=), :x, :xs)), :x)
         @test_sexp {:while true fun} Expr(:while, :true, :fun)
         @test_sexp {:module Foo 1} Expr(:module, true, :Foo, Expr(:block, 1))
         @test_sexp {:baremodule Foo 1} Expr(:module, false, :Foo, Expr(:block, 1))
@@ -31,6 +32,18 @@ end
         @test_sexp {:return} Expr(:return, nothing)
         @test_sexp {:return 1} Expr(:return, 1)
 
+        @test_sexp {:function foo {x} x} Expr(
+            :function,
+            Expr(:call, :foo, :x),
+            Expr(:block, :x),
+        )
+
+        @test_sexp {:macro foo {x} x} Expr(
+            :macro,
+            Expr(:call, :foo, :x),
+            Expr(:block, :x),
+        )
+
         @test_sexp {:struct Foo a b::Int} Expr(
             :struct,
             false,
@@ -42,6 +55,13 @@ end
             :let,
             Expr(:block, Expr(:(=), :x, 1), Expr(:(=), :y, 2)),
             Expr(:block, 1),
+        )
+
+        @test_sexp {:cond {foo bar} {{foo bar} baz}} Expr(
+            :if,
+            :foo,
+            Expr(:block, :bar),
+            Expr(:elseif, Expr(:call, :foo, :bar), Expr(:block, :baz)),
         )
 
         ex = JLisp.sexp(:({@show {max 1 2}}); flatten=true)

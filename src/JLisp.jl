@@ -85,6 +85,10 @@ end
 defstruct(ismutable::Bool, head, args...) =
     Expr(:struct, ismutable, sexp(head), Expr(:block, map(sexp, args)...))
 
+# Creates a module definition.
+defmodule(isbare::Bool, name, args...) =
+    Expr(:module, !isbare, sexp(name), Expr(:block, map(sexp, args)...))
+
 function funhead(name, args::Vector)
     # Collect positional and keyword arguments.
     pos, kws = [], []
@@ -108,13 +112,14 @@ function funhead(name, args::Vector)
     else
         head = Expr(:call, sexp(name), pos...)
         isempty(kws) || insert!(head.args, 2, Expr(:parameters, kws...))
+        head
     end
 end
 
 # Create a function definition.
 function defun(ismacro::Bool, name, args::Vector, body...)
     head = funhead(name, args)
-    Expr(ismacro ? :macro : :function, head, map(sexp, body)...)
+    Expr(ismacro ? :macro : :function, head, Expr(:block, map(sexp, body)...))
 end
 
 # This catches literals like symbols, numbers, and strings.
@@ -290,12 +295,10 @@ kwexpr(::Val{:begin}, args...) = Expr(:block, map(sexp, args)...)
 
 # A module definition.
 # Example: {:module Foo {body} {morebody}}
-kwexpr(::Val{:module}, arg1, args...) =
-    Expr(:module, true, sexp(arg1), Expr(:block, map(sexp, args)...))
+kwexpr(::Val{:module}, arg1, args...) = defmodule(false, arg1, args...)
 
 # A bare module definition (same syntax as :module).
-kwexpr(::Val{:baremodule}, arg1, args...) =
-    Expr(:module, false, sexp(arg1), Expr(:block, map(sexp, args)...))
+kwexpr(::Val{:baremodule}, arg1, args...) = defmodule(true, arg1, args...)
 
 # A function definition.
 # Example: {:function foo {arg1 arg2::Type arg3::Type=default :kw kw1} {body}}
@@ -310,8 +313,19 @@ kwexpr(::Val{:macro}, arg1, arg2::Expr, args...) = defun(true, arg1, arg2.args, 
 # A multi-branch if statement, i.e. elseif.
 # No else is inserted.
 # Example: {:cond {{pred1 x} body1} {{pred2 x} body2} {true body3}}
-function kwexpr(::Val{:cond}, args...)
-    # TODO
+kwexpr(::Val{:cond}) = se":cond must have at least one branch"
+function kwexpr(::Val{:cond}, arg1::Expr, args...)
+    arg1.head === :row && length(arg1.args) == 2 || se"Invalid :cond branch"
+    ex = Expr(:if, sexp(first(arg1.args)), Expr(:block, sexp(last(arg1.args))))
+    branch = ex
+    for arg in args
+        arg isa Expr && arg.head === :row && length(arg.args) == 2 ||
+            se"Invalid :cond branch"
+        elif = Expr(:elseif, sexp(first(arg.args)), Expr(:block, sexp(last(arg.args))))
+        push!(branch.args, elif)
+        branch = elif
+    end
+    ex
 end
 
 # TODO: try, using, import.
