@@ -17,7 +17,7 @@ end
         @test_sexp {:def x 1} Expr(:(=), :x, 1)
         @test_sexp {:const x 1} Expr(:const, Expr(:(=), :x, 1))
         @test_sexp {:if true 1 2} Expr(:if, :true, 1, 2)
-        @test_sexp {:for {x xs} x} Expr(:for, Expr(:(=), :x, :xs), :x)
+        @test_sexp {:for {x xs} x} Expr(:for, Expr(:block, Expr(:(=), :x, :xs)), :x)
         @test_sexp {:while true fun} Expr(:while, :true, :fun)
         @test_sexp {:module Foo 1} Expr(:module, true, :Foo, Expr(:block, 1))
         @test_sexp {:baremodule Foo 1} Expr(:module, false, :Foo, Expr(:block, 1))
@@ -31,7 +31,7 @@ end
         @test_sexp {:return} Expr(:return, nothing)
         @test_sexp {:return 1} Expr(:return, 1)
 
-        @test_sexp {:struct Foo a {b Int}} Expr(
+        @test_sexp {:struct Foo a b::Int} Expr(
             :struct,
             false,
             :Foo,

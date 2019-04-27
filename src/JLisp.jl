@@ -1,6 +1,8 @@
-module JLisp
+baremodule JLisp
 
 export @jlisp
+
+using Base
 
 """
     @jlisp {your {sexp here}}
@@ -10,6 +12,13 @@ Parse and execute some jlisp code.
 macro jlisp(ex)
     esc(sexp(ex; flatten=true))
 end
+
+"""
+    JLisp.include(file)
+
+The same as regular `include`, but works on jlisp files.
+"""
+include(file) = Core.eval(@__MODULE__, open(parse, file))
 
 # Parses a file or literal code.
 parse(io::IO) = parse(read(io, String))
@@ -43,7 +52,7 @@ isbinding(ex::Expr) = ex.head === :call && length(ex.args) == 2 && first(ex.args
 isopassign(x) = false
 function isopassign(s::Symbol)
     str = string(s)
-    length(str) == 2 && endswith(str, '=') &&
+    length(str) == 2 && last(str) == '=' &&
         !isdefined(Base, s) && isdefined(Base, Symbol(first(str)))
 end
 
@@ -60,19 +69,52 @@ function flatten!(ex::Expr)
     ex
 end
 
+nametypedefault(x::Symbol) = x, nothing, nothing
+function nametypedefault(ex::Expr)
+    if ex.head === :(=)
+        name, type, _  = nametypedefault(first(ex.args))
+        name, type, last(ex.args)
+    elseif ex.head === :(::)
+        first(ex.args), last(ex.args), nothing
+    else
+        nothing, nothing, nothing
+    end
+end
+
 # Creates a struct definition.
-function defstruct(mut::Bool, head, args...)
-    block = Expr(:block)
-    foreach(args) do arg
-        if arg isa Expr && arg.head === :row && length(arg.args) == 2 &&
-            first(arg.args) isa Symbol
-            # Typed argument.
-            push!(block.args, Expr(:(::), first(arg.args), sexp(last(arg.args))))
+defstruct(ismutable::Bool, head, args...) =
+    Expr(:struct, ismutable, sexp(head), Expr(:block, map(sexp, args)...))
+
+function funhead(name, args::Vector)
+    # Collect positional and keyword arguments.
+    pos, kws = [], []
+    found_kws = false
+    for arg in args
+        if arg == QuoteNode(:kw)
+            found_kws && se"Can only indicate start of keywords once"
+            found_kws = true
+        elseif found_kws
+            push!(kws, sexp(arg))
         else
-            push!(block.args, arg)
+            push!(pos, sexp(arg))
         end
     end
-    Expr(:struct, mut, head, block)
+
+    # TODO: This is kinda ugly.
+    if name isa Expr && name.head === :where
+        call = Expr(:call, sexp(first(name.args)), pos...)
+        isempty(kws) || insert!(call.args, 2, Expr(:parameters, kws...))
+        Expr(:where, call, last(name.args))
+    else
+        head = Expr(:call, sexp(name), pos...)
+        isempty(kws) || insert!(head.args, 2, Expr(:parameters, kws...))
+    end
+end
+
+# Create a function definition.
+function defun(ismacro::Bool, name, args::Vector, body...)
+    head = funhead(name, args)
+    Expr(ismacro ? :macro : :function, head, map(sexp, body)...)
 end
 
 # This catches literals like symbols, numbers, and strings.
@@ -141,7 +183,7 @@ function sexp(::Val{:row}, arg1, args...)
 end
 
 # This catches "escaped" operators that would otherwise cause parse errors.
-# Example: {:+ 1 2}.
+# Example: {:+= 1 2}
 function kwexpr(::Val{F}, args...) where F
     if isopassign(F)
         Expr(F, map(sexp, args)...)
@@ -153,18 +195,17 @@ function kwexpr(::Val{F}, args...) where F
 end
 
 # An assignment, i.e. var = val.
-# Example: {:def x 1}.
+# Example: {:def x 1}
 kwexpr(::Val{:def}, args...) = se"Wrong number of arguments to :def"
-kwexpr(::Val{:def}, arg1, arg2) = se"First argument to :def must be an identifier"
-kwexpr(::Val{:def}, arg1::Symbol, arg2) = Expr(:(=), arg1, sexp(arg2))
+kwexpr(::Val{:def}, arg1, arg2) = Expr(:(=), arg1, sexp(arg2))
 
 # A const assignment.
-# Example: {:const x 1}.
+# Example: {:const x 1}
 kwexpr(::Val{:const}, args...) = se"Wrong number of arguments to :const"
 kwexpr(::Val{:const}, arg1, arg2) = Expr(:const, kwexpr(Val(:def), arg1, arg2))
 
 # An if-else expression that does not contain any elseif.
-# Example: {:if {fun args} {do this} {otherwise this}}.
+# Example: {:if {fun args} {do this} {otherwise this}}
 kwexpr(::Val{:if}, args...) = se"Not enough arguments to :if"
 kwexpr(::Val{:if}, arg1, arg2, arg3, arg4, args...) =
     se"Too many arguments to :if (use :cond for elseif)"
@@ -175,28 +216,31 @@ function kwexpr(::Val{:if}, arg1, arg2, arg3=nothing)
 end
 
 # A for loop.
-# Example: {:for {i 1:10} {print i}}.
-kwexpr(::Val{:for}, args...) = se"Invalid :for iterator"
-kwexpr(::Val{:for}, arg1::Expr, args...) = se"Wrong number of arguments to :for"
-function kwexpr(::Val{:for}, arg1::Expr, arg2=nothing)
-    it = sexp(arg1)
-    isbinding(it) || se"Invalid :for iterator"
-    ex = Expr(:for, Expr(:(=), first(it.args), sexp(last(it.args))))
-    arg2 === nothing || push!(ex.args, sexp(arg2))
-   ex
+# Example: {:for {i 1:10} {println 2i}}
+kwexpr(::Val{:for}, args...) = se"Wrong number of arguments to :for"
+kwexpr(::Val{:for}, arg1) = se"Invalid :for iterator"
+function kwexpr(::Val{:for}, arg1::Expr, args...)
+    # Allow shortcut syntax for a single iterator.
+    arg1.args[1] isa Expr || (arg1 = Expr(:row, arg1))
+    its = map(sexp, arg1.args)
+    !isempty(its) && all(isbinding, its) || se"Invalid :for iterator"
+    binds = map(ex -> Expr(:(=), first(ex.args), sexp(last(ex.args))), its)
+    ex = Expr(:for, Expr(:block, binds...))
+    isempty(args) || append!(ex.args, map(sexp, args))
+    ex
 end
 
 # A while loop.
-# Example: {:while {pred} body}.
-kwexpr(::Val{:while}, args...) = se"Wrong number of arguments to :while"
-function kwexpr(::Val{:while}, arg1, arg2=nothing)
+# Example: {:while {pred} {println "hi!"}}
+kwexpr(::Val{:while}) = se"Wrong number of arguments to :while"
+function kwexpr(::Val{:while}, arg1, args...)
     ex = Expr(:while, sexp(arg1))
-    arg2 === nothing || push!(ex.args, sexp(arg2))
+    isempty(args) || append!(ex.args, map(sexp, args))
     ex
 end
 
 # A let binding.
-# Example: {:let {{x 1} {y 2}} {+ x y}}.
+# Example: {:let {{x 1} {y 2}} {+ x y}}
 kwexpr(::Val{:let}, arg1, arg2) = se"Invalid :let binding"
 kwexpr(::Val{:let}, args...) = Expr(:let, Expr(:block), Expr(:block, map(sexp, args)...))
 function kwexpr(::Val{:let}, arg1::Expr, args...)
@@ -216,13 +260,13 @@ function kwexpr(::Val{:let}, arg1::Expr, args...)
 end
 
 # A return statement.
-# Example: {:return 1}.
+# Example: {:return 1}
 kwexpr(::Val{:return}) = Expr(:return, nothing)
 kwexpr(::Val{:return}, arg1) = Expr(:return, sexp(arg1))
 kwexpr(::Val{:return}, args...) = se"Invalid return statement"
 
 # A struct definition.
-# Example: {:struct Foo field {field2 Type} {:function Foo {} {new 0 0}}}.
+# Example: {:struct Foo field {field2 Type} {:function Foo {} {new 0 0}}}
 kwexpr(::Val{:struct}, arg1, args...) = defstruct(false, arg1, args...)
 
 # A mutable struct definition (same syntax as :struct).
@@ -241,33 +285,35 @@ kwexpr(::Val{:primitive}, args...) = Expr(:primitive, map(sexp, args)...)
 kwexpr(::Val{:quote}, args...) = Expr(:quote, Expr(:block, map(sexp, args)...))
 
 # A block start.
-# Example: {:begin {fun} {other arg} result}.
+# Example: {:begin {fun} {other arg} result}
 kwexpr(::Val{:begin}, args...) = Expr(:block, map(sexp, args)...)
 
 # A module definition.
 # Example: {:module Foo {body} {morebody}}
-kwexpr(::Val{:module}, args...) = se"Invalid module name"
-kwexpr(::Val{:module}, arg1::Symbol, args...) =
-    Expr(:module, true, arg1, Expr(:block, map(sexp, args)...))
+kwexpr(::Val{:module}, arg1, args...) =
+    Expr(:module, true, sexp(arg1), Expr(:block, map(sexp, args)...))
 
 # A bare module definition (same syntax as :module).
-kwexpr(::Val{:baremodule}, args...) = se"Invalid module name"
-kwexpr(::Val{:baremodule}, arg1::Symbol, args...) =
-    Expr(:module, false, arg1, Expr(:block, map(sexp, args)...))
+kwexpr(::Val{:baremodule}, arg1, args...) =
+    Expr(:module, false, sexp(arg1), Expr(:block, map(sexp, args)...))
 
 # A function definition.
-# Example: {:function foo {arg1 arg2::Type arg3::Type=default :kw kw1}}
-function kwexpr(::Val{:function}, arg1, arg2::Expr, args...)
-    # TODO: arg2 arguments must be inserted into arg1 :call.
-end
+# Example: {:function foo {arg1 arg2::Type arg3::Type=default :kw kw1} {body}}
+kwexpr(::Val{:function}, args...) = se"Invalid :function definition"
+kwexpr(::Val{:function}, arg1, arg2::Expr, args...) = defun(false, arg1, arg2.args, args...)
+
+# A macro definition.
+# Example: {:macro foo {arg1 arg2 arg3::Expr}}
+kwexpr(::Val{:macro}, args...) = se"Invalid :macro definition"
+kwexpr(::Val{:macro}, arg1, arg2::Expr, args...) = defun(true, arg1, arg2.args, args...)
 
 # A multi-branch if statement, i.e. elseif.
-# Example: {:cond {{pred1 x} body1} {{pred2 x} body2} {true body3}}.
-# Note that no else is inserted.
+# No else is inserted.
+# Example: {:cond {{pred1 x} body1} {{pred2 x} body2} {true body3}}
 function kwexpr(::Val{:cond}, args...)
     # TODO
 end
 
-# TODO: try, function, macro, using, import.
+# TODO: try, using, import.
 
 end
